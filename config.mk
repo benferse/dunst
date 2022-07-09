@@ -1,5 +1,5 @@
 # paths
-PREFIX ?= /usr/local
+PREFIX ?= ${HOME}/.local
 BINDIR ?= ${PREFIX}/bin
 SYSCONFDIR ?= ${PREFIX}/etc/xdg
 SYSCONFFILE ?= ${SYSCONFDIR}/dunst/dunstrc
