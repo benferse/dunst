@@ -49,7 +49,7 @@ PangoFontDescription *pango_fdesc;
 
 #define UINT_MAX_N(bits) ((1 << bits) - 1)
 
-void load_icon_themes()
+void load_icon_themes(void)
 {
         bool loaded_theme = false;
 
@@ -711,7 +711,7 @@ static void render_content(cairo_t *c, struct colored_layout *cl, int width, dou
                 } // else ICON_RIGHT
 
                 cairo_set_source_surface(c, cl->icon, round(image_x * scale), round(image_y * scale));
-                draw_rect(c, image_x, image_y, image_width, image_height, scale);
+                draw_rounded_rect(c, image_x, image_y, image_width, image_height, settings.icon_corner_radius, scale, true, true);
                 cairo_fill(c);
         }
 
@@ -744,7 +744,7 @@ static void render_content(cairo_t *c, struct colored_layout *cl, int width, dou
                 double half_frame_width = frame_width / 2.0;
 
                 /* Draw progress bar
-                * TODO: Modify draw_rounde_rect to fix blurry lines due to fractional scaling
+                * TODO: Modify draw_rounded_rect to fix blurry lines due to fractional scaling
                 * Note: the bar could be drawn a bit smaller, because the frame is drawn on top 
                 */
                 // left side (fill)
@@ -870,7 +870,13 @@ void draw(void)
 {
         assert(queues_length_displayed() > 0);
 
-        GSList *layouts = create_layouts(output->win_get_context(win));
+        cairo_t *c = output->win_get_context(win);
+
+        if(c == NULL) {
+                return;
+        }
+
+        GSList *layouts = create_layouts(c);
 
         struct dimensions dim = calculate_dimensions(layouts);
         LOG_D("Window dimensions %ix%i", dim.w, dim.h);

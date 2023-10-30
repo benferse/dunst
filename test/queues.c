@@ -475,24 +475,68 @@ TEST test_datachange_endless(void)
 
 TEST test_datachange_endless_agethreshold(void)
 {
+        const gint64 AGE_THRESHOLD = S2US(5);
+        settings.show_age_threshold = AGE_THRESHOLD;
+
+        gint64 cur_time = 0;
+        queues_init();
+
+        struct notification *n = test_notification("n", 0);
+        n->timestamp = cur_time;
+
+        queues_notification_insert(n);
+        queues_update(STATUS_NORMAL, cur_time);
+
+        ASSERT_IN_RANGEm("Age threshold is activated and the next wakeup should be less than a second away",
+                AGE_THRESHOLD - S2US(1)/2, queues_get_next_datachange(cur_time + AGE_THRESHOLD - S2US(1)), S2US(1)/2);
+
+        ASSERT_IN_RANGEm("Age threshold is activated and the next wakeup should be less than the age threshold",
+                AGE_THRESHOLD / 2, queues_get_next_datachange(cur_time), AGE_THRESHOLD/2);
+
+        settings.show_age_threshold = S2US(0);
+        ASSERT_IN_RANGEm("Age threshold is activated and the next wakeup should be less than a second away",
+                S2US(1)/2, queues_get_next_datachange(cur_time), S2US(1)/2);
+
+        queues_teardown();
+        PASS();
+}
+
+TEST test_datachange_agethreshold_at_second(void)
+{
         settings.show_age_threshold = S2US(5);
 
         queues_init();
 
-        struct notification *n = test_notification("n", 0);
+        const gint64 NOTIF_DELTA = 200;
 
+        gint64 cur_time = 500*1000; // T = 0.5s
+        struct notification *n = test_notification("n0", 0);
+        n->timestamp = cur_time;
         queues_notification_insert(n);
-        queues_update(STATUS_NORMAL, time_monotonic_now());
 
-        ASSERT_IN_RANGEm("Age threshold is activated and the next wakeup should be less than a second away",
-                S2US(1)/2, queues_get_next_datachange(time_monotonic_now() + S2US(4)), S2US(1)/2);
+        cur_time += NOTIF_DELTA;
+        n = test_notification("n1", 0);
+        n->timestamp = cur_time;
+        queues_notification_insert(n);
 
-        ASSERT_IN_RANGEm("Age threshold is activated and the next wakeup should be less than the age threshold",
-                settings.show_age_threshold/2, queues_get_next_datachange(time_monotonic_now()), settings.show_age_threshold/2);
+        queues_update(STATUS_NORMAL, cur_time);
 
-        settings.show_age_threshold = S2US(0);
-        ASSERT_IN_RANGEm("Age threshold is activated and the next wakeup should be less than a second away",
-                S2US(1)/2, queues_get_next_datachange(time_monotonic_now()), S2US(1)/2);
+        // The next update should be when age must be first displayed, at T=5.5s
+        ASSERTm("Age threshold is activated, first wakeup should be at 5.5s",
+                        queues_get_next_datachange(cur_time) == S2US(5) + 500000);
+
+        const int NB_MICROSECS = 6;
+        const gint64 MICROSECS[] = {
+                0, 10, NOTIF_DELTA, NOTIF_DELTA + 1, 124131, S2US(1)-1
+        };
+        for(gint64 base_time = S2US(5); base_time <= S2US(7); base_time += S2US(1)) {
+                for(int musec_id = 0; musec_id < NB_MICROSECS; ++musec_id) {
+                        cur_time = base_time + MICROSECS[musec_id];
+                        gint64 next_wakeup = queues_get_next_datachange(cur_time);
+                        ASSERTm("Age threshold is activated, next wakeup should be at next turn of second",
+                                        next_wakeup == base_time + S2US(1));
+                }
+        }
 
         queues_teardown();
         PASS();
@@ -502,19 +546,21 @@ TEST test_datachange_queues(void)
 {
         queues_init();
 
+        gint64 cur_time = 0;
         struct notification *n = test_notification("n", 10);
+        n->timestamp = cur_time;
 
         queues_notification_insert(n);
         ASSERTm("The inserted notification is inside the waiting queue, so it should get ignored.",
-               queues_get_next_datachange(time_monotonic_now()) < S2US(0));
+               queues_get_next_datachange(cur_time) < 0);
 
         queues_update(STATUS_NORMAL, time_monotonic_now());
         ASSERT_IN_RANGEm("The notification has to get closed in less than its timeout",
-               S2US(10)/2, queues_get_next_datachange(time_monotonic_now()), S2US(10)/2);
+               S2US(10)/2, queues_get_next_datachange(cur_time), S2US(10)/2);
 
         queues_notification_close(n, REASON_UNDEF);
         ASSERTm("The inserted notification is inside the history queue, so it should get ignored",
-               queues_get_next_datachange(time_monotonic_now()) < S2US(0));
+               queues_get_next_datachange(cur_time) < 0);
 
         queues_teardown();
         PASS();
@@ -524,23 +570,29 @@ TEST test_datachange_ttl(void)
 {
         struct notification *n;
         queues_init();
+        gint64 cur_time = 0;
 
         n = test_notification("n1", 15);
+        n->timestamp = cur_time;
 
         queues_notification_insert(n);
-        queues_update(STATUS_NORMAL, time_monotonic_now());
+        queues_update(STATUS_NORMAL, cur_time);
         ASSERT_IN_RANGEm("The notification has to get closed in less than its timeout.",
-               n->timeout/2, queues_get_next_datachange(time_monotonic_now()), n->timeout/2);
+               n->timeout/2, queues_get_next_datachange(cur_time), n->timeout/2);
 
+        cur_time += 500; // microseconds
         n = test_notification("n2", 10);
+        n->timestamp = cur_time;
 
         queues_notification_insert(n);
-        queues_update(STATUS_NORMAL, time_monotonic_now());
+        queues_update(STATUS_NORMAL, cur_time);
         ASSERT_IN_RANGEm("The timeout of the second notification has to get used as sleep time now.",
-               n->timeout/2, queues_get_next_datachange(time_monotonic_now()), n->timeout/2);
+               cur_time + n->timeout/2, queues_get_next_datachange(cur_time), n->timeout/2);
 
-        ASSERT_EQm("The notification already timed out. You have to answer with 0.",
-               S2US(0), queues_get_next_datachange(time_monotonic_now() + S2US(10)));
+        cur_time += S2US(10);
+
+        ASSERT_EQm("The notification already timed out. You have to answer with the current time.",
+               cur_time, queues_get_next_datachange(cur_time));
 
         queues_teardown();
         PASS();
@@ -1041,6 +1093,7 @@ SUITE(suite_queues)
         RUN_TEST(test_datachange_beginning_empty);
         RUN_TEST(test_datachange_endless);
         RUN_TEST(test_datachange_endless_agethreshold);
+        RUN_TEST(test_datachange_agethreshold_at_second);
         RUN_TEST(test_datachange_queues);
         RUN_TEST(test_datachange_ttl);
         RUN_TEST(test_queue_history_clear);

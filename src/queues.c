@@ -503,7 +503,7 @@ void queues_update(struct dunst_status status, gint64 time)
                         continue;
                 }
 
-                n->start = time_monotonic_now();
+                n->start = time;
                 notification_run_script(n);
 
                 if (n->skip_display && !n->redisplayed) {
@@ -538,7 +538,7 @@ void queues_update(struct dunst_status status, gint64 time)
                         if (i_waiting && notification_cmp(i_displayed->data, i_waiting->data) > 0) {
                                 struct notification *todisp = i_waiting->data;
 
-                                todisp->start = time_monotonic_now();
+                                todisp->start = time;
                                 notification_run_script(todisp);
 
                                 queues_swap_notifications(displayed, i_displayed, waiting, i_waiting);
@@ -553,33 +553,40 @@ void queues_update(struct dunst_status status, gint64 time)
 /* see queues.h */
 gint64 queues_get_next_datachange(gint64 time)
 {
-        gint64 sleep = G_MAXINT64;
+        gint64 wakeup_time = G_MAXINT64;
+        gint64 next_second = time + S2US(1) - (time % S2US(1));
 
         for (GList *iter = g_queue_peek_head_link(displayed); iter;
                         iter = iter->next) {
                 struct notification *n = iter->data;
-                gint64 ttl = n->timeout - (time - n->start);
+                gint64 timeout_ts = n->start + n->timeout;
 
                 if (n->timeout > 0 && n->locked == 0) {
-                        if (ttl > 0)
-                                sleep = MIN(sleep, ttl);
+                        if (timeout_ts > time)
+                                wakeup_time = MIN(wakeup_time, timeout_ts);
                         else
-                                // while we're processing, the notification already timed out
-                                return 0;
+                                // while we're processing or while locked, the notification already timed out
+                                return time;
                 }
 
                 if (settings.show_age_threshold >= 0) {
                         gint64 age = time - n->timestamp;
 
-                        // sleep exactly until the next shift of the second happens
-                        if (age > settings.show_age_threshold - S2US(1))
-                                sleep = MIN(sleep, (S2US(1) - (age % S2US(1))));
+                        if (age > settings.show_age_threshold - S2US(1)) {
+                                /* Notification age should be updated -- sleep
+                                 * until the next turn of second.
+                                 * This ensures that all notifications' ages
+                                 * will change at once, and that at most one
+                                 * update will occur each second for this
+                                 * purpose. */
+                                wakeup_time = MIN(wakeup_time, next_second);
+                        }
                         else
-                                sleep = MIN(sleep, settings.show_age_threshold - age);
+                                wakeup_time = MIN(wakeup_time, n->timestamp + settings.show_age_threshold);
                 }
         }
 
-        return sleep != G_MAXINT64 ? sleep : -1;
+        return wakeup_time != G_MAXINT64 ? wakeup_time : -1;
 }
 
 

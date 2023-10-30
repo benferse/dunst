@@ -71,6 +71,7 @@ void wake_up(void)
 static gboolean run(void *data)
 {
         static gint64 next_timeout = 0;
+        static guint next_timeout_id = 0;
         int reason = GPOINTER_TO_INT(data);
 
         LOG_D("RUN, reason %i", reason);
@@ -81,25 +82,32 @@ static gboolean run(void *data)
 
         queues_update(status, now);
 
-        bool active = queues_length_displayed() > 0;
-
-        if (active) {
-                // Call draw before showing the window to avoid flickering
-                draw();
-                output->win_show(win);
-        } else {
+        if (!queues_length_displayed()) {
                 output->win_hide(win);
+                return G_SOURCE_REMOVE;
         }
 
-        if (active) {
-                gint64 sleep = queues_get_next_datachange(now);
-                gint64 timeout_at = now + sleep;
+        // Call draw before showing the window to avoid flickering
+        draw();
+        output->win_show(win);
+
+        gint64 timeout_at = queues_get_next_datachange(now);
+        if (timeout_at != -1) {
+                // Previous computations may have taken time, update `now`
+                // This might mean that `timeout_at` is now before `now`, so
+                // we have to make sure that `sleep` is still positive.
+                now = time_monotonic_now();
+                gint64 sleep = timeout_at - now;
+                sleep = MAX(sleep, 1000); // Sleep at least 1ms
 
                 LOG_D("Sleeping for %li ms", sleep/1000);
 
                 if (sleep >= 0) {
                         if (reason == 0 || next_timeout < now || timeout_at < next_timeout) {
-                                g_timeout_add(sleep/1000, run, NULL);
+                                if (next_timeout != 0) {
+                                        g_source_remove(next_timeout_id);
+                                }
+                                next_timeout_id = g_timeout_add(sleep/1000, run, NULL);
                                 next_timeout = timeout_at;
                         }
                 }
@@ -157,8 +165,7 @@ int dunst_main(int argc, char *argv[])
 
         dunst_log_init(false);
 
-        if (cmdline_get_bool("-v/-version", false, "Print version")
-            || cmdline_get_bool("--version", false, "Print version")) {
+        if (cmdline_get_bool("-v/-version/--version", false, "Print version")) {
                 print_version();
         }
 
@@ -170,21 +177,20 @@ int dunst_main(int argc, char *argv[])
         cmdline_config_path =
             cmdline_get_string("-conf/-config", NULL,
                                "Path to configuration file");
-        load_settings(cmdline_config_path);
 
-        if (cmdline_get_bool("-h/-help", false, "Print help")
-            || cmdline_get_bool("--help", false, "Print help")) {
-                usage(EXIT_SUCCESS);
-        }
-
-        if (cmdline_get_bool("-print", false, "Print notifications to stdout")
-            || cmdline_get_bool("--print", false, "Print notifications to stdout")) {
+        if (cmdline_get_bool("-print/--print", false, "Print notifications to stdout")) {
                 settings.print_notifications = true;
         }
 
-        settings.startup_notification = cmdline_get_bool("--startup_notification",
-                        0, "Display a notification on startup.");
+        settings.startup_notification = cmdline_get_bool("-startup_notification/--startup_notification",
+                        false, "Display a notification on startup.");
 
+        /* Help should always be the last to set up as calls to cmdline_get_* (as a side effect) add entries to the usage list. */
+        if (cmdline_get_bool("-h/-help/--help", false, "Print help")) {
+                usage(EXIT_SUCCESS);
+        }
+
+        load_settings(cmdline_config_path);
         int dbus_owner_id = dbus_init();
 
         mainloop = g_main_loop_new(NULL, FALSE);
